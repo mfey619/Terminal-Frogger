@@ -1,3 +1,19 @@
+# ANSI colors for terminal sprites. Applied per cell so map geometry
+# (one logical character wide) stays intact.
+RESET = '\033[0m'
+SYMBOL_COLORS = {
+    # Water: bright cyan on blue background
+    '^': {'fg': '96', 'bg': '44'},
+    'water_death': {'fg': '97', 'bg': '44'},
+    # Logs: yellow/brown wood fill
+    'o': {'fg': '30', 'bg': '43'},
+    # Cars: bright red; speed cars: bright magenta
+    'u': {'fg': '91'},
+    'p': {'fg': '95'},
+    'car_death': {'fg': '91'},
+}
+
+
 class GD(object):
 
     def __init__(self, map, symbols):
@@ -10,9 +26,29 @@ class GD(object):
         self.map = self.trans_map(map)
         self.act_map = [list(i) for i in map]
 
+    def _colorize(self, char, style):
+        """Wrap a single display cell in ANSI color codes when styled."""
+        if not style:
+            return char
+        # Keep plain spaces transparent unless a background fills the tile
+        if char == ' ' and 'bg' not in style:
+            return char
+        codes = []
+        if 'fg' in style:
+            codes.append(style['fg'])
+        if 'bg' in style:
+            codes.append(style['bg'])
+        return '\033[{}m{}{}'.format(';'.join(codes), char, RESET)
+
     def get(self, symbol, symbol_num=0):
-        """Returns a copy of the transformed symbol"""
-        return self._symbols[symbol][symbol_num][:]
+        """
+        Returns a copy of the symbol as rows of display cells.
+
+        Each cell is one visible character, optionally wrapped in ANSI color.
+        """
+        rows = self._symbols[symbol][symbol_num]
+        style = SYMBOL_COLORS.get(symbol)
+        return [[self._colorize(ch, style) for ch in row] for row in rows]
 
     def print_map(self, y_range, x_range):
         new_map = [i[x_range[0]:x_range[1]]
@@ -38,11 +74,11 @@ class GD(object):
         """Takes a line and transforms each symbol, the line may turn
         into multiple lines
         """
-        #Start the new lines, one symbol turns into multiple lines
-        new_lines = self.get(line[0])
+        # Deep-copy rows so later symbols can extend them independently
+        new_lines = [row[:] for row in self.get(line[0])]
 
-        #For each symbol, retrieve its map and add each line to the
-        #corresponding line in new_lines
+        # For each symbol, retrieve its map and add each line to the
+        # corresponding line in new_lines
         for i in range(1, len(line)):
             new_symbol = self.get(line[i])
 
