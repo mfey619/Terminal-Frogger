@@ -1,3 +1,5 @@
+import sys
+
 # ANSI colors for terminal sprites. Applied per cell so map geometry
 # (one logical character wide) stays intact.
 RESET = '\033[0m'
@@ -26,6 +28,11 @@ class GD(object):
         self.map = self.trans_map(map)
         self.act_map = [list(i) for i in map]
 
+        # Last frame written to the terminal (viewport cells + status lines).
+        # Used so we only emit the cells that actually changed.
+        self._screen_buf = None
+        self._status_buf = None
+
     def _colorize(self, char, style):
         """Wrap a single display cell in ANSI color codes when styled."""
         if not style:
@@ -50,11 +57,101 @@ class GD(object):
         style = SYMBOL_COLORS.get(symbol)
         return [[self._colorize(ch, style) for ch in row] for row in rows]
 
+    def invalidate(self):
+        """Forget the last drawn frame so the next draw is a full refresh."""
+        self._screen_buf = None
+        self._status_buf = None
+
+    def enter_draw_mode(self):
+        """Switch to the alternate screen and hide the cursor."""
+        sys.stdout.write('\033[?1049h\033[?25l')
+        sys.stdout.flush()
+        self.invalidate()
+
+    def leave_draw_mode(self):
+        """Restore the cursor and leave the alternate screen."""
+        sys.stdout.write('\033[?25h\033[?1049l')
+        sys.stdout.flush()
+        self.invalidate()
+
     def print_map(self, y_range, x_range):
+        """Full print of a map slice (used by tests / simple callers)."""
         new_map = [i[x_range[0]:x_range[1]]
                     for i in self.map[y_range[0]: y_range[1]]]
         for i in new_map:
             print(''.join(i))
+
+    def draw_frame(self, y_range, x_range, status_lines=None, force=False):
+        """
+        Paint the current viewport to the terminal.
+
+        Instead of reprinting the whole map every frame, compare against the
+        previous frame and only write runs of cells that changed, using ANSI
+        cursor addressing. A camera jump or invalidate() forces a full redraw.
+        """
+        if status_lines is None:
+            status_lines = []
+
+        new_rows = [row[x_range[0]:x_range[1]][:]
+                    for row in self.map[y_range[0]:y_range[1]]]
+
+        need_full = (
+            force
+            or self._screen_buf is None
+            or len(self._screen_buf) != len(new_rows)
+            or (self._screen_buf and len(self._screen_buf[0]) != len(new_rows[0]))
+        )
+
+        if need_full:
+            self._draw_full(new_rows, status_lines)
+        else:
+            self._draw_dirty(new_rows, status_lines)
+
+        self._screen_buf = new_rows
+        self._status_buf = list(status_lines)
+
+    def _draw_full(self, rows, status_lines):
+        """Home, clear, and write the entire viewport + status."""
+        parts = ['\033[H\033[J']
+        for row in rows:
+            parts.append(''.join(row))
+            parts.append('\n')
+        for line in status_lines:
+            parts.append(line)
+            parts.append('\n')
+        sys.stdout.write(''.join(parts))
+        sys.stdout.flush()
+
+    def _draw_dirty(self, rows, status_lines):
+        """Rewrite only changed cell runs and status lines."""
+        parts = []
+        for y, (old_row, new_row) in enumerate(zip(self._screen_buf, rows)):
+            if old_row == new_row:
+                continue
+            x = 0
+            width = len(new_row)
+            while x < width:
+                if old_row[x] == new_row[x]:
+                    x += 1
+                    continue
+                start = x
+                while x < width and old_row[x] != new_row[x]:
+                    x += 1
+                # Terminal positions are 1-based; each map cell is one column.
+                parts.append('\033[{};{}H'.format(y + 1, start + 1))
+                parts.append(''.join(new_row[start:x]))
+
+        status_row = len(rows) + 1
+        if status_lines != self._status_buf:
+            for i, line in enumerate(status_lines):
+                # Clear the line then write, so shorter HUD text does not ghost.
+                parts.append('\033[{};1H\033[2K{}'.format(status_row + i, line))
+
+        if parts:
+            # Park the cursor below the HUD so stray input does not junk the map.
+            parts.append('\033[{};1H'.format(status_row + len(status_lines)))
+            sys.stdout.write(''.join(parts))
+            sys.stdout.flush()
 
     def update(self, symbol_map):
         """Updates the Display Map using the Symbol Map"""

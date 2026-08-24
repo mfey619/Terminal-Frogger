@@ -128,21 +128,22 @@ class Game(object):
 
         return objects
 
-    def print_game(self, normal=False):
+    def print_game(self, normal=False, force=False):
         """
-        Prints the current camera page of the Display Map with info.
+        Draw the current camera page. Only cells that changed are rewritten
+        unless force=True or the camera just jumped to a new page.
         """
         old_camera = self.camera_row
         self.update_camera()
-        # Hard clear on a page jump so the previous view does not linger.
-        if self.camera_row != old_camera:
-            os.system('clear')
+        page_jump = self.camera_row != old_camera
         y_range, x_range = self.camera_env()
-        self.GD.print_map(y_range, x_range)
-
-        print("Lives: {}   Score: {}   Crossing: {}".format(
-            self.lives, self.score, self.level))
-        print("Up[w], Down[s], Left[a], Right[d] or Exit[x]")
+        status = [
+            "Lives: {}   Score: {}   Crossing: {}".format(
+                self.lives, self.score, self.level),
+            "Up[w], Down[s], Left[a], Right[d] or Exit[x]",
+        ]
+        self.GD.draw_frame(
+            y_range, x_range, status_lines=status, force=(force or page_jump))
 
     def view_height(self):
         """How many action-map rows fit in the terminal window."""
@@ -286,6 +287,8 @@ class Game(object):
 
     def show_screen(self, title, body_lines, prompt):
         """Clear the terminal and print a framed status screen."""
+        # Leave the gameplay buffer so status text is not mixed with dirty draws.
+        self.GD.leave_draw_mode()
         width = 44
         border = '=' * width
         os.system('clear')
@@ -389,20 +392,20 @@ class Game(object):
         self.frame = 1
         self.tick = 0
         self.input[0] = None
-        os.system('clear')
-        self.print_game()
+        self.GD.enter_draw_mode()
+        self.print_game(force=True)
         self.frame += 1
 
     def main_loop(self):
         """The main loop of the game"""
         self.start_screen()
 
-        # Clear screen once at the beginning
-        os.system('clear')
+        # Alternate screen + hidden cursor; dirty-cell redraws from here on.
+        self.GD.enter_draw_mode()
         # Start thread which checks for input and alternate terminal screen
         self.thread.start()
 
-        # Loop forever, printing game approx. FPS per second
+        # Loop forever, drawing game approx. FPS per second
         self.FPS = 40
         self.frame = 1
         self.tick = 0
@@ -414,7 +417,6 @@ class Game(object):
                 self.update_map()
 
                 if self.timer(self.FPS):
-                    print("\033[H", end='')
                     self.print_game()
                     self.frame += 1
 
@@ -489,6 +491,7 @@ class Game(object):
         """
         Waits for thread to stop properly
         """
+        self.GD.leave_draw_mode()
         if prompt:
             print("Press any key to exit.")
         self.thread.stop()
