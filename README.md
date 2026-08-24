@@ -13,6 +13,10 @@ upward and a bonus for each successful crossing.
 Each win starts a new **crossing** on a longer map with more roads and
 water (with logs). Keep going further as far as you can.
 
+Long maps use a fixed-height view: when you climb near the top of the
+screen, the camera jumps and places the frog at the bottom of the next
+page of the map.
+
 The game opens on a start screen; death and win events show their own
 screens and wait for a key before continuing (or exiting on game over).
 

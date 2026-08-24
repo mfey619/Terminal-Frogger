@@ -33,6 +33,10 @@ class Game(object):
     STARTING_LIVES = 3
     SCORE_PER_ROW = 10
     SCORE_PER_WIN = 100
+    # Fixed terminal window in action-map tiles (classic map height).
+    VIEW_TILES = 11
+    # When the frog enters this many tiles of the top of the view, page up.
+    JUMP_MARGIN = 2
 
     def __init__(self, map, symbols, level=1):
         """
@@ -47,6 +51,7 @@ class Game(object):
         self.level = max(1, int(level))
         self.lives = self.STARTING_LIVES
         self.score = 0
+        self.camera_row = 0
 
         # Initialize game display, includes the Display Map
         self.GD = GD(map, symbols)
@@ -71,6 +76,8 @@ class Game(object):
         self.snakes = self.init_objects('s', 3, Snake)
         # Track farthest progress toward the top (lower y is farther)
         self.farthest_row = self.GD.trans_coords(self.player.coords, "disp_map")[0]
+        # Start on the bottom page so the lower border is visible.
+        self.camera_row = max(0, len(self.act_map) - self.view_height())
 
     def reset_level(self):
         """Restore the map and entities after a death or successful crossing."""
@@ -123,15 +130,74 @@ class Game(object):
 
     def print_game(self, normal=False):
         """
-        Prints Display Map in players environment with info
+        Prints the current camera page of the Display Map with info.
         """
-        y_range, x_range = self.player_env(100, len(self.GD.map[0]))
+        old_camera = self.camera_row
+        self.update_camera()
+        # Hard clear on a page jump so the previous view does not linger.
+        if self.camera_row != old_camera:
+            os.system('clear')
+        y_range, x_range = self.camera_env()
         self.GD.print_map(y_range, x_range)
 
         print("Lives: {}   Score: {}   Crossing: {}".format(
             self.lives, self.score, self.level))
         print("Up[w], Down[s], Left[a], Right[d] or Exit[x]")
 
+    def view_height(self):
+        """How many action-map rows fit in the terminal window."""
+        return min(self.VIEW_TILES, len(self.act_map))
+
+    def player_act_row(self):
+        """Player row in action-map coordinates."""
+        return self.GD.trans_coords(self.player.coords, "disp_map")[0]
+
+    def snap_camera_to_player(self):
+        """Page the camera so the frog sits on the bottom row of the view."""
+        view_h = self.view_height()
+        player_y = self.player_act_row()
+        max_camera = max(0, len(self.act_map) - view_h)
+        # Place frog on the last visible row, then clamp to the map.
+        self.camera_row = player_y - (view_h - 1)
+        if self.camera_row < 0:
+            self.camera_row = 0
+        elif self.camera_row > max_camera:
+            self.camera_row = max_camera
+        # Near the map bottom, pin to the final page so the border shows.
+        if player_y >= len(self.act_map) - 2:
+            self.camera_row = max_camera
+
+    def update_camera(self):
+        """
+        Jump to a new page when the frog leaves the comfortable band of
+        the current view. After an upward jump, the frog is at the bottom
+        again with more map revealed above.
+        """
+        view_h = self.view_height()
+        if view_h >= len(self.act_map):
+            self.camera_row = 0
+            return
+
+        player_y = self.player_act_row()
+        view_top = self.camera_row
+        view_bottom = self.camera_row + view_h - 1
+
+        # Climbed into the top band of this page -> snap frog to bottom.
+        if player_y <= view_top + self.JUMP_MARGIN and view_top > 0:
+            self.snap_camera_to_player()
+        # Moved below (or somehow above) the current page -> resnap.
+        elif player_y > view_bottom or player_y < view_top:
+            self.snap_camera_to_player()
+
+    def camera_env(self):
+        """Display-map y/x ranges for the current camera page."""
+        tile_h = self.GD.size[0]
+        view_h = self.view_height()
+        y_up = self.camera_row * tile_h
+        y_down = min(len(self.GD.map), (self.camera_row + view_h) * tile_h)
+        x_left = 0
+        x_right = len(self.GD.map[0])
+        return [[y_up, y_down], [x_left, x_right]]
 
     def player_env(self, y_range, x_range):
         """
