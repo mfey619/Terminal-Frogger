@@ -21,7 +21,7 @@ def init_curses_colors():
         default_bg = -1
     except curses.error:
         default_bg = curses.COLOR_BLACK
-    curses.init_pair(1, curses.COLOR_CYAN, curses.COLOR_BLUE)      # water
+    curses.init_pair(1, curses.COLOR_CYAN, default_bg)            # water
     curses.init_pair(2, curses.COLOR_YELLOW, default_bg)           # logs
     curses.init_pair(3, curses.COLOR_RED, default_bg)              # cars
     curses.init_pair(4, curses.COLOR_MAGENTA, default_bg)          # speed cars

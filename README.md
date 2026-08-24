@@ -20,7 +20,7 @@ page of the map.
 The game opens on a start screen; death and win events show their own
 screens and wait for a key before continuing (or exiting on game over).
 
-Water, logs, and cars use curses color pairs (blue water, yellow logs,
+Water, logs, and cars use curses color pairs (cyan water, yellow logs,
 red/magenta cars). Use a color-capable terminal for the best look.
 
 Display and keyboard input go through Python's **curses** library, which
