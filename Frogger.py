@@ -34,15 +34,17 @@ class Game(object):
     SCORE_PER_ROW = 10
     SCORE_PER_WIN = 100
 
-    def __init__(self, map, symbols):
+    def __init__(self, map, symbols, level=1):
         """
         Initialize the game
 
         :param map: <list> A list of strings containing simple map
         :param symbols: <dict> Contains all the graphics for our symbols
+        :param level: <int> Crossing number; higher levels use longer maps
         """
         self.original_map = [row[:] for row in map]
         self.symbols = symbols
+        self.level = max(1, int(level))
         self.lives = self.STARTING_LIVES
         self.score = 0
 
@@ -126,7 +128,8 @@ class Game(object):
         y_range, x_range = self.player_env(100, len(self.GD.map[0]))
         self.GD.print_map(y_range, x_range)
 
-        print("Lives: {}   Score: {}".format(self.lives, self.score))
+        print("Lives: {}   Score: {}   Crossing: {}".format(
+            self.lives, self.score, self.level))
         print("Up[w], Down[s], Left[a], Right[d] or Exit[x]")
 
 
@@ -247,6 +250,7 @@ class Game(object):
             [
                 'Cross the road. Ride the logs.',
                 'Reach the top border to score!',
+                'Each win opens a longer map.',
                 '',
                 'Controls:',
                 '  w Up     s Down',
@@ -270,6 +274,7 @@ class Game(object):
                 '',
                 'Lives left: {}'.format(self.lives),
                 'Score: {}'.format(self.score),
+                'Crossing: {}'.format(self.level),
             ],
             'Press any key to continue',
         )
@@ -283,12 +288,14 @@ class Game(object):
                 message.strip() or 'You died.',
                 '',
                 'Final score: {}'.format(self.score),
+                'Reached crossing: {}'.format(self.level),
             ],
             'Press any key to exit',
         )
 
     def win_screen(self):
         """Screen after a successful crossing."""
+        next_level = self.level + 1
         self.show_screen(
             'YOU MADE IT!',
             [
@@ -296,6 +303,9 @@ class Game(object):
                 '',
                 '+{} crossing bonus'.format(self.SCORE_PER_WIN),
                 'Score: {}'.format(self.score),
+                '',
+                'Crossing {} complete.'.format(self.level),
+                'Next map grows longer (#{})'.format(next_level),
             ],
             'Press any key for the next crossing',
         )
@@ -385,9 +395,11 @@ class Game(object):
             self.farthest_row = act_row
 
     def win(self):
-        """Handle reaching the top goal: score bonus and start another crossing."""
+        """Handle reaching the top goal: score bonus and start a longer crossing."""
         self.score += self.SCORE_PER_WIN
         self.win_screen()
+        self.level += 1
+        self.original_map = generate_map(self.level)
         self.reset_level()
         self.resync_clock()
         raise LevelReset()
@@ -703,17 +715,133 @@ class Snake(Thing):
 
 
 
-maze2=     ['------------',
-            '            ',
-            '^^^^ooo^^^^^',
-            '^^^^^^^ooo^^',
-            '^ooo^^^^^^^^',
-            '            ',
-            '___u_u_u_u_u',
-            '_p__________',
-            'u_u_u___u_u_',
-            '     H      ',
-            '------------']
+MAP_WIDTH = 12
+
+
+def _grass_row(width):
+    return ' ' * width
+
+
+def _border_row(width):
+    return '-' * width
+
+
+def _place_run(row, start, length, symbol):
+    """Write a contiguous run of *symbol* into *row* starting at *start*."""
+    for offset in range(length):
+        row[start + offset] = symbol
+
+
+def _water_row(width, rng):
+    """One river lane with a single log (ooo) the frog can ride.
+
+    One log per lane keeps riders from colliding: logs pick their own
+    random speed, so two on the same row would eventually overlap.
+    """
+    row = ['^'] * width
+    start = rng.randint(0, width - 3)
+    _place_run(row, start, 3, 'o')
+    return ''.join(row)
+
+
+def _road_row(width, rng, with_speed=False):
+    """One traffic lane with cars spaced apart so they do not stack.
+
+    Fast cars get their own lane: they move at a different speed than normal
+    cars, so mixing them on one row lets them overwrite each other.
+    """
+    row = ['_'] * width
+    placed = []
+    # Keep a wide gap; cars wrap the row and same-speed packs stay clear.
+    min_gap = 3
+
+    def can_place(index):
+        if row[index] != '_':
+            return False
+        for other in placed:
+            direct = abs(index - other)
+            wrapped = width - direct
+            if min(direct, wrapped) < min_gap:
+                return False
+        return True
+
+    candidates = list(range(width))
+    rng.shuffle(candidates)
+
+    if with_speed:
+        # Exclusive fast lane — only 'p' cars, same speed.
+        car_target = rng.randint(1, 2)
+        symbol = 'p'
+    else:
+        car_target = rng.randint(1, 2)
+        symbol = 'u'
+
+    for index in candidates:
+        if len(placed) >= car_target:
+            break
+        if can_place(index):
+            row[index] = symbol
+            placed.append(index)
+
+    return ''.join(row)
+
+
+def _median_row(width, rng, allow_snake=False):
+    """Safe grass between hazard blocks; sometimes a snake on later crossings."""
+    if allow_snake and rng.random() < 0.45:
+        row = [' '] * width
+        start = rng.randint(0, width - 3)
+        _place_run(row, start, 3, 's')
+        return ''.join(row)
+    return _grass_row(width)
+
+
+def generate_map(level, width=MAP_WIDTH, rng=None):
+    """
+    Build a Frogger map that grows longer with each crossing.
+
+    Level 1 is a short classic layout (water, then roads). Each later level
+    adds more river and road rows. From level 3 onward, extra hazard sections
+    are stacked so you can keep going further.
+    """
+    level = max(1, int(level))
+    if rng is None:
+        rng = random.Random()
+
+    # Depth grows each crossing; inner section size is capped so late
+    # crossings stay playable while still getting longer overall.
+    water_depth = 2 + level
+    road_depth = 2 + level
+    extra_section_pairs = max(0, level - 2)
+    inner_water = max(2, min(water_depth - 1, 5))
+    inner_road = max(2, min(road_depth - 1, 5))
+
+    # Top -> bottom: goal border, water (near goal), optional extra
+    # road/water pairs, then roads above the frog's start.
+    sections = [('water', water_depth)]
+    for _ in range(extra_section_pairs):
+        sections.append(('road', inner_road))
+        sections.append(('water', inner_water))
+    sections.append(('road', road_depth))
+
+    rows = [_border_row(width), _grass_row(width)]
+    for index, (kind, count) in enumerate(sections):
+        if kind == 'water':
+            for _ in range(count):
+                rows.append(_water_row(width, rng))
+        else:
+            speed_lane = count // 2
+            for lane in range(count):
+                rows.append(_road_row(width, rng, with_speed=(lane == speed_lane)))
+        if index < len(sections) - 1:
+            rows.append(_median_row(width, rng, allow_snake=(level >= 2)))
+
+    start = list(_grass_row(width))
+    start[width // 2] = 'H'
+    rows.append(''.join(start))
+    rows.append(_border_row(width))
+    return rows
+
 
 symbols = {
 
@@ -799,5 +927,6 @@ symbols = {
 
 
 if __name__ == "__main__":
-    game = Game(maze2, symbols)
+    start_level = 1
+    game = Game(generate_map(start_level), symbols, level=start_level)
     game.main_loop()
