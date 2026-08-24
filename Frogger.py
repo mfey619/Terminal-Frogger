@@ -215,8 +215,96 @@ class Game(object):
             if threading.current_thread().stopped():
                 exit()
 
+    def show_screen(self, title, body_lines, prompt):
+        """Clear the terminal and print a framed status screen."""
+        width = 44
+        border = '=' * width
+        os.system('clear')
+        print(border)
+        print(title.center(width))
+        print(border)
+        print()
+        for line in body_lines:
+            print('  ' + line)
+        print()
+        print(prompt.center(width))
+        print()
+
+    def wait_for_key(self, use_thread=True):
+        """Block until the player presses a key, then consume it."""
+        if use_thread:
+            self.input[0] = None
+            while self.input[0] is None:
+                time.sleep(0.05)
+            self.input[0] = None
+        else:
+            getch()
+
+    def start_screen(self):
+        """Title screen shown before the first crossing."""
+        self.show_screen(
+            'TERMINAL FROGGER',
+            [
+                'Cross the road. Ride the logs.',
+                'Reach the top border to score!',
+                '',
+                'Controls:',
+                '  w Up     s Down',
+                '  a Left   d Right',
+                '  x Exit',
+                '',
+                'Lives: {}'.format(self.STARTING_LIVES),
+                '+{} points per row advanced'.format(self.SCORE_PER_ROW),
+                '+{} points per crossing'.format(self.SCORE_PER_WIN),
+            ],
+            'Press any key to start',
+        )
+        self.wait_for_key(use_thread=False)
+
+    def death_screen(self, message):
+        """Screen after losing a life, with lives remaining."""
+        self.show_screen(
+            'SPLAT!',
+            [
+                message.strip() or 'You died.',
+                '',
+                'Lives left: {}'.format(self.lives),
+                'Score: {}'.format(self.score),
+            ],
+            'Press any key to continue',
+        )
+        self.wait_for_key(use_thread=True)
+
+    def game_over_screen(self, message):
+        """Final screen when all lives are gone."""
+        self.show_screen(
+            'GAME OVER',
+            [
+                message.strip() or 'You died.',
+                '',
+                'Final score: {}'.format(self.score),
+            ],
+            'Press any key to exit',
+        )
+
+    def win_screen(self):
+        """Screen after a successful crossing."""
+        self.show_screen(
+            'YOU MADE IT!',
+            [
+                'Safe on the far side.',
+                '',
+                '+{} crossing bonus'.format(self.SCORE_PER_WIN),
+                'Score: {}'.format(self.score),
+            ],
+            'Press any key for the next crossing',
+        )
+        self.wait_for_key(use_thread=True)
+
     def main_loop(self):
         """The main loop of the game"""
+        self.start_screen()
+
         # Clear screen once at the beginning
         os.system('clear')
         # Start thread which checks for input and alternate terminal screen
@@ -283,13 +371,12 @@ class Game(object):
     def win(self):
         """Handle reaching the top goal: score bonus and start another crossing."""
         self.score += self.SCORE_PER_WIN
-        os.system('clear')
-        self.print_game()
-        print("You made it across! +{} points. Score: {}".format(
-            self.SCORE_PER_WIN, self.score))
-        time.sleep(1.5)
+        self.win_screen()
         self.reset_level()
         os.system('clear')
+        # Avoid a frame burst after the pause on the win screen
+        self.start = time.perf_counter()
+        self.frame = 1
         raise LevelReset()
 
     def dead(self, message=' '):
@@ -297,26 +384,26 @@ class Game(object):
         Lose a life on death. Respawn if lives remain; otherwise end the game.
         """
         self.lives -= 1
-        os.system('clear')
-        self.print_game()
-        print("Sorry but you died. " + message)
 
         if self.lives > 0:
-            print("Lives left: {}. Get ready...".format(self.lives))
-            time.sleep(1.5)
+            self.death_screen(message)
             self.reset_level()
             os.system('clear')
+            self.start = time.perf_counter()
+            self.frame = 1
             raise LevelReset()
         else:
-            print("Game over! Final score: {}".format(self.score))
-            self.kill()
+            self.game_over_screen(message)
+            self.kill(prompt=False)
 
-    def kill(self):
+    def kill(self, prompt=True):
         """
         Waits for thread to stop properly
         """
-        print("Press any key to exit.")
+        if prompt:
+            print("Press any key to exit.")
         self.thread.stop()
+        self.wait_for_key(use_thread=True)
         self.thread.join()
         exit()
 
