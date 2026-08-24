@@ -1,4 +1,15 @@
 # Terminal-Frogger
-Small frogger-themed game I coded for my Macbook's terminal. Should work for Windows as well but haven't tested yet. Just run Frogger.py in the Terminal to start the game! P.S.: This only works for python3.
+Small frogger-themed game for the terminal. Run with Python 3:
+
+```bash
+python3 Frogger.py
+```
+
+**Controls:** `w` up, `s` down, `a` left, `d` right, `x` exit
+
+**Goal:** Cross to the top border. You have 3 lives. Score points for moving
+upward and a bonus for each successful crossing.
+
+Should work on Windows as well but hasn't been fully tested.
 
 [![asciicast](https://asciinema.org/a/zS5dHHiX3TahTpQUznsObDtAp.svg)](https://asciinema.org/a/zS5dHHiX3TahTpQUznsObDtAp)

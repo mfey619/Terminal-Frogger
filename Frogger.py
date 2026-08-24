@@ -7,6 +7,13 @@ import traceback
 from Game_Display import GD
 from getch import getch
 
+
+class LevelReset(Exception):
+    """Raised after a life is lost or the goal is reached so the game loop
+    can abort the current update pass on a freshly reset level."""
+    pass
+
+
 class StoppableThread(threading.Thread):
     """Thread class with a stop() method. The thread itself has to check
     regularly for the stopped() condition."""
@@ -23,6 +30,10 @@ class StoppableThread(threading.Thread):
 
 class Game(object):
 
+    STARTING_LIVES = 3
+    SCORE_PER_ROW = 10
+    SCORE_PER_WIN = 100
+
     def __init__(self, map, symbols):
         """
         Initialize the game
@@ -30,22 +41,40 @@ class Game(object):
         :param map: <list> A list of strings containing simple map
         :param symbols: <dict> Contains all the graphics for our symbols
         """
+        self.original_map = [row[:] for row in map]
+        self.symbols = symbols
+        self.lives = self.STARTING_LIVES
+        self.score = 0
+
         # Initialize game display, includes the Display Map
         self.GD = GD(map, symbols)
         # GD makes a copy of the Symbol Map as a list of lists
         self.act_map = self.GD.act_map
 
-        #Initialize the different objects in the map
-        self.player = Player('H', self)
-        self.logs = self.init_objects('o', 3, Log)
-        self.cars = self.init_objects('u', 1, Car)
-        self.cars.append(self.init_objects('p', 1, SpeedCar)[0])
-        self.snakes = self.init_objects('s', 3, Snake)
+        self._init_entities()
 
         # Initialize shared list between __main__ and thread for input
         self.input = [None]
         self.thread = StoppableThread(target=self.get_input,
                                         args=(self.input, ))
+
+    def _init_entities(self):
+        """Create player and moving objects from the current action map."""
+        self.player = Player('H', self)
+        self.logs = self.init_objects('o', 3, Log)
+        self.cars = self.init_objects('u', 1, Car)
+        speed_cars = self.init_objects('p', 1, SpeedCar)
+        if speed_cars:
+            self.cars.extend(speed_cars)
+        self.snakes = self.init_objects('s', 3, Snake)
+        # Track farthest progress toward the top (lower y is farther)
+        self.farthest_row = self.GD.trans_coords(self.player.coords, "disp_map")[0]
+
+    def reset_level(self):
+        """Restore the map and entities after a death or successful crossing."""
+        self.GD = GD([row[:] for row in self.original_map], self.symbols)
+        self.act_map = self.GD.act_map
+        self._init_entities()
 
     def find(self, symbol):
         """
@@ -97,28 +126,7 @@ class Game(object):
         y_range, x_range = self.player_env(100, len(self.GD.map[0]))
         self.GD.print_map(y_range, x_range)
 
-        # for i in self.act_map:
-            # print(''.join(i))
-
-        p_coords = self.player.coords
-        actp_coords = self.GD.trans_coords(p_coords, "disp_map")
-        c_coords = self.cars[0].coords[0]
-        actc_coords = self.GD.trans_coords(c_coords, "disp_map")
-
-        time_elapsed = round(time.perf_counter() - self.start, 2)
-        if time_elapsed > 1:
-            fps = self.frame / time_elapsed
-        else:
-            fps = 0
-
-        # print("Yrange and xrange: {} {}".format(y_range,x_range))
-        # print("Player coords: {}".format(p_coords))
-        # print("Act_map player coords: {}".format(actp_coords))
-        # print("First car coords: {}".format(c_coords))
-        # print("Act_map car coords: {}".format(actc_coords))
-        # print("Time elapsed: {}".format(time_elapsed))
-        # print("FPS: {}".format(round(fps, 2)))
-
+        print("Lives: {}   Score: {}".format(self.lives, self.score))
         print("Up[w], Down[s], Left[a], Right[d] or Exit[x]")
 
 
@@ -160,35 +168,41 @@ class Game(object):
         if self.input[0] == None:
             return False
         else:
-            input = self.input[0]
+            key = self.input[0]
             self.input[0] = None
 
-            if input == 'x':
+            if key == 'x':
                 self.kill()
-            elif input == 'w':
+            elif key == 'w':
                 move = "Up"
-            elif input == 's':
+            elif key == 's':
                 move = "Down"
-            elif input == 'a':
+            elif key == 'a':
                 move = "Left"
-            elif input == 'd':
+            elif key == 'd':
                 move = "Right"
             else:
                 return False
 
-            self.player.update(move)
+            try:
+                self.player.update(move)
+            except LevelReset:
+                pass
             return True
 
     def update_map(self):
         """Updates all objects in map"""
-        for log in self.logs:
-            log.update()
+        try:
+            for log in self.logs:
+                log.update()
 
-        for car in self.cars:
-            car.update()
+            for car in self.cars:
+                car.update()
 
-        for snake in self.snakes:
-            snake.update()
+            for snake in self.snakes:
+                snake.update()
+        except LevelReset:
+            return
 
     def get_input(self, input):
         """
@@ -259,15 +273,43 @@ class Game(object):
         if correct_time - actual_time > 0:
             time.sleep(correct_time - actual_time)
 
-    def dead(self, message= ' '):
+    def award_progress(self, act_row):
+        """Award points when the player reaches a new farthest row up the map."""
+        if act_row < self.farthest_row:
+            rows_gained = self.farthest_row - act_row
+            self.score += rows_gained * self.SCORE_PER_ROW
+            self.farthest_row = act_row
+
+    def win(self):
+        """Handle reaching the top goal: score bonus and start another crossing."""
+        self.score += self.SCORE_PER_WIN
+        os.system('clear')
+        self.print_game()
+        print("You made it across! +{} points. Score: {}".format(
+            self.SCORE_PER_WIN, self.score))
+        time.sleep(1.5)
+        self.reset_level()
+        os.system('clear')
+        raise LevelReset()
+
+    def dead(self, message=' '):
         """
-        Prints the map once more to show final death screen,
-        prints final message and then kills program
+        Lose a life on death. Respawn if lives remain; otherwise end the game.
         """
+        self.lives -= 1
         os.system('clear')
         self.print_game()
         print("Sorry but you died. " + message)
-        self.kill()
+
+        if self.lives > 0:
+            print("Lives left: {}. Get ready...".format(self.lives))
+            time.sleep(1.5)
+            self.reset_level()
+            os.system('clear')
+            raise LevelReset()
+        else:
+            print("Game over! Final score: {}".format(self.score))
+            self.kill()
 
     def kill(self):
         """
@@ -322,21 +364,38 @@ class Player(object):
         if position[1] < 0 or position[1] >= len(self.GD.map[0]):
             return True
 
+        # Block moving off the top/bottom of the display map
+        if position[0] < 0 or position[0] >= len(self.GD.map):
+            return True
+
         pos_y, pos_x = self.GD.trans_coords(position, "disp_map")
         symbol = self.act_map[pos_y][pos_x]
 
         if symbol in [' ', 'o', '_']:
             self.move_position(self.coords, position)
             self.replace = symbol
+            self.game.award_progress(pos_y)
+            return True
+        elif symbol == '-':
+            # Top border is the goal; bottom border is solid
+            if pos_y == 0:
+                self.move_position(self.coords, position)
+                self.replace = symbol
+                self.game.award_progress(pos_y)
+                self.game.win()
             return True
         elif symbol == '^':
             self.move_position(self.coords, position)
             self.GD.display("water_death", position)
             self.game.dead("You poor fellow drowned.")
-        elif symbol == 'u':
+        elif symbol in ('u', 'p'):
             self.move_position(self.coords, position)
             self.GD.display("car_death", position)
             self.game.dead("You jumped on a car...SPLAT!")
+        elif symbol == 's':
+            self.move_position(self.coords, position)
+            self.GD.display("snake_death", position)
+            self.game.dead("You jumped on a snake...SPLAT!")
 
     def move_position(self, position, new_position):
         """
@@ -588,7 +647,7 @@ symbols = {
     'H':  [['        ',
             '   o o  ',
             ' _|   |_',
-            ' \  |  /',]],
+            r' \  |  /',]],
 
     'u':  [['    _   ',
             '___| |__',
@@ -631,9 +690,9 @@ symbols = {
                       '""""""""',]],
 
     'car_death':    [['        ',
-                      ' \ o o /',
+                      r' \ o o /',
                       ' _     _',
-                      ' /  |  \\',]],
+                      r' /  |  \\',]],
 
     'snake_death':  [['        ',
                       '        ',
