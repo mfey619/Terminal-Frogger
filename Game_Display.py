@@ -5,8 +5,8 @@ SYMBOL_COLORS = {
     # Water: bright cyan on blue background
     '^': {'fg': '96', 'bg': '44'},
     'water_death': {'fg': '97', 'bg': '44'},
-    # Logs: yellow/brown wood fill
-    'o': {'fg': '30', 'bg': '43'},
+    # Logs: yellow/brown characters only (no background fill)
+    'o': {'fg': '33'},
     # Cars: bright red; speed cars: bright magenta
     'u': {'fg': '91'},
     'p': {'fg': '95'},
