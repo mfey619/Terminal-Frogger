@@ -1,17 +1,30 @@
-# ANSI colors for terminal sprites. Applied per cell so map geometry
-# (one logical character wide) stays intact.
-RESET = '\033[0m'
-SYMBOL_COLORS = {
-    # Water: bright cyan on blue background
-    '^': {'fg': '96', 'bg': '44'},
-    'water_death': {'fg': '97', 'bg': '44'},
-    # Logs: yellow/brown characters only (no background fill)
-    'o': {'fg': '33'},
-    # Cars: bright red; speed cars: bright magenta
-    'u': {'fg': '91'},
-    'p': {'fg': '95'},
-    'car_death': {'fg': '91'},
+import curses
+
+# Logical color names mapped to curses color-pair ids in init_curses_colors().
+SYMBOL_COLOR_PAIRS = {
+    '^': 1,
+    'water_death': 1,
+    'o': 2,
+    'u': 3,
+    'car_death': 3,
+    'p': 4,
 }
+
+
+def init_curses_colors():
+    """Register the color pairs used by sprites (safe if terminal has no color)."""
+    if not curses.has_colors():
+        return
+    curses.start_color()
+    try:
+        curses.use_default_colors()
+        default_bg = -1
+    except curses.error:
+        default_bg = curses.COLOR_BLACK
+    curses.init_pair(1, curses.COLOR_CYAN, curses.COLOR_BLUE)      # water
+    curses.init_pair(2, curses.COLOR_YELLOW, default_bg)           # logs
+    curses.init_pair(3, curses.COLOR_RED, default_bg)              # cars
+    curses.init_pair(4, curses.COLOR_MAGENTA, default_bg)          # speed cars
 
 
 class GD(object):
@@ -19,73 +32,121 @@ class GD(object):
     def __init__(self, map, symbols):
         self._symbols = symbols
 
-        # Size of one map unit in y, x length
+        # Size of one map unit in y, x length (plain chars, no ANSI wrappers)
         empty_block = self.get(' ')
         self.size = (len(empty_block), len(empty_block[0]))
 
-        self.map = self.trans_map(map)
+        self.map, self.attrs = self.trans_map(map)
         self.act_map = [list(i) for i in map]
 
-    def _colorize(self, char, style):
-        """Wrap a single display cell in ANSI color codes when styled."""
-        if not style:
-            return char
-        # Keep plain spaces transparent unless a background fills the tile
-        if char == ' ' and 'bg' not in style:
-            return char
-        codes = []
-        if 'fg' in style:
-            codes.append(style['fg'])
-        if 'bg' in style:
-            codes.append(style['bg'])
-        return '\033[{}m{}{}'.format(';'.join(codes), char, RESET)
+    def color_for(self, symbol):
+        """Return the curses color-pair id for a logical map symbol."""
+        return SYMBOL_COLOR_PAIRS.get(symbol, 0)
 
     def get(self, symbol, symbol_num=0):
         """
-        Returns a copy of the symbol as rows of display cells.
-
-        Each cell is one visible character, optionally wrapped in ANSI color.
+        Returns a copy of the symbol as rows of plain display characters.
         """
         rows = self._symbols[symbol][symbol_num]
-        style = SYMBOL_COLORS.get(symbol)
-        return [[self._colorize(ch, style) for ch in row] for row in rows]
+        return [list(row) for row in rows]
 
     def print_map(self, y_range, x_range):
+        """Full print of a map slice (tests / non-curses callers)."""
         new_map = [i[x_range[0]:x_range[1]]
                     for i in self.map[y_range[0]: y_range[1]]]
         for i in new_map:
             print(''.join(i))
 
+    def draw_curses(self, stdscr, y_range, x_range, status_lines=None):
+        """
+        Paint the viewport onto a curses window and refresh.
+
+        curses keeps its own screen buffer and only sends dirty cells to the
+        terminal on refresh(), so we can rewrite the whole view each frame.
+        """
+        if status_lines is None:
+            status_lines = []
+
+        max_y, max_x = stdscr.getmaxyx()
+        view = self.map[y_range[0]:y_range[1]]
+        view_attrs = self.attrs[y_range[0]:y_range[1]]
+
+        for y, row in enumerate(view):
+            if y >= max_y:
+                break
+            chars = row[x_range[0]:x_range[1]]
+            colors = view_attrs[y][x_range[0]:x_range[1]]
+            self._add_row(stdscr, y, chars, colors, max_x)
+
+        for i, line in enumerate(status_lines):
+            sy = len(view) + i
+            if sy >= max_y:
+                break
+            try:
+                stdscr.move(sy, 0)
+                stdscr.clrtoeol()
+                stdscr.addnstr(sy, 0, line, max(0, max_x - 1))
+            except curses.error:
+                pass
+
+        # Clear any leftover HUD lines below if the view shrank.
+        for sy in range(len(view) + len(status_lines), max_y):
+            try:
+                stdscr.move(sy, 0)
+                stdscr.clrtoeol()
+            except curses.error:
+                break
+
+        stdscr.refresh()
+
+    def _add_row(self, stdscr, y, chars, colors, max_x):
+        """Write one row, coalescing runs that share the same color pair."""
+        width = min(len(chars), max_x)
+        x = 0
+        while x < width:
+            color = colors[x] if x < len(colors) else 0
+            start = x
+            x += 1
+            while x < width and (colors[x] if x < len(colors) else 0) == color:
+                x += 1
+            chunk = ''.join(chars[start:x])
+            attr = curses.color_pair(color) if color else 0
+            try:
+                stdscr.addstr(y, start, chunk, attr)
+            except curses.error:
+                # Writing the bottom-right corner raises; ignore safely.
+                pass
+
     def update(self, symbol_map):
         """Updates the Display Map using the Symbol Map"""
-        self.map = self.trans_map(symbol_map)
+        self.map, self.attrs = self.trans_map(symbol_map)
 
     def trans_map(self, map):
-        """Takes each line and transforms it, returning a new map"""
-        new_map = self.trans_line(map[0])
+        """Takes each line and transforms it, returning chars + color attrs."""
+        lines, attrs = self.trans_line(map[0])
 
         for i in range(1, len(map)):
-            new_lines = self.trans_line(map[i])
-            new_map += new_lines
+            new_lines, new_attrs = self.trans_line(map[i])
+            lines += new_lines
+            attrs += new_attrs
 
-        return [list(i) for i in new_map]
+        return lines, attrs
 
     def trans_line(self, line):
-        """Takes a line and transforms each symbol, the line may turn
-        into multiple lines
-        """
-        # Deep-copy rows so later symbols can extend them independently
+        """Takes a line and transforms each symbol into display rows + attrs."""
+        color = self.color_for(line[0])
         new_lines = [row[:] for row in self.get(line[0])]
+        new_attrs = [[color] * len(row) for row in new_lines]
 
-        # For each symbol, retrieve its map and add each line to the
-        # corresponding line in new_lines
         for i in range(1, len(line)):
             new_symbol = self.get(line[i])
+            color = self.color_for(line[i])
 
             for j in range(len(new_symbol)):
                 new_lines[j] += new_symbol[j]
+                new_attrs[j] += [color] * len(new_symbol[j])
 
-        return new_lines
+        return new_lines, new_attrs
 
     def trans_coords(self, coords, map):
         """Takes coords from *map* and returns the top left corner
@@ -110,7 +171,7 @@ class GD(object):
     def display(self, symbol, coords, symbol_num=0):
         """Paints *symbol* on map in position *coords*"""
         pic = self.get(symbol, symbol_num)
-        # Define starting point: line(y) and pos(x) in line
+        color = self.color_for(symbol)
         y, x = coords
 
         for i in range(len(pic)):
@@ -121,6 +182,7 @@ class GD(object):
                     x_index = (x + j) % len(self.map[y + i])
 
                 self.map[y + i][x_index] = pic[i][j]
+                self.attrs[y + i][x_index] = color
 
     def check_collision(self, obj1, obj2):
         """Checks for a collision between two objects using their coords"""
