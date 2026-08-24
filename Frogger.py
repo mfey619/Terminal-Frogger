@@ -132,7 +132,11 @@ class Game(object):
         """
         Prints the current camera page of the Display Map with info.
         """
+        old_camera = self.camera_row
         self.update_camera()
+        # Hard clear on a page jump so the previous view does not linger.
+        if self.camera_row != old_camera:
+            os.system('clear')
         y_range, x_range = self.camera_env()
         self.GD.print_map(y_range, x_range)
 
