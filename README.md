@@ -10,6 +10,9 @@ python3 Frogger.py
 **Goal:** Cross to the top border. You have 3 lives. Score points for moving
 upward and a bonus for each successful crossing.
 
+Each win starts a new **crossing** on a longer map with more roads and
+water (with logs). Keep going further as far as you can.
+
 The game opens on a start screen; death and win events show their own
 screens and wait for a key before continuing (or exiting on game over).
 
