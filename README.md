@@ -20,9 +20,11 @@ page of the map.
 The game opens on a start screen; death and win events show their own
 screens and wait for a key before continuing (or exiting on game over).
 
-Water, logs, and cars use ANSI colors (blue water, yellow logs, red/magenta
-cars). Use a color-capable terminal for the best look.
+Water, logs, and cars use curses color pairs (blue water, yellow logs,
+red/magenta cars). Use a color-capable terminal for the best look.
 
-Should work on Windows as well but hasn't been fully tested.
+Display and keyboard input go through Python's **curses** library, which
+keeps a screen buffer and only updates cells that changed. On Windows,
+install `windows-curses` (`pip install windows-curses`).
 
 [![asciicast](https://asciinema.org/a/zS5dHHiX3TahTpQUznsObDtAp.svg)](https://asciinema.org/a/zS5dHHiX3TahTpQUznsObDtAp)

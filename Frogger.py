@@ -1,11 +1,11 @@
 import os
 import time
 import random
-import threading
+import locale
+import curses
 import traceback
 
-from Game_Display import GD
-from getch import getch
+from Game_Display import GD, init_curses_colors
 
 
 class LevelReset(Exception):
@@ -13,20 +13,6 @@ class LevelReset(Exception):
     can abort the current update pass on a freshly reset level."""
     pass
 
-
-class StoppableThread(threading.Thread):
-    """Thread class with a stop() method. The thread itself has to check
-    regularly for the stopped() condition."""
-
-    def __init__(self, target, args):
-        super(StoppableThread, self).__init__(target=target, args=args)
-        self._stop_event = threading.Event()
-
-    def stop(self):
-        self._stop_event.set()
-
-    def stopped(self):
-        return self._stop_event.is_set()
 
 class Game(object):
 
@@ -60,10 +46,10 @@ class Game(object):
 
         self._init_entities()
 
-        # Initialize shared list between __main__ and thread for input
+        # Latest key from curses (polled on the main thread; curses is not
+        # safe to share stdin across threads).
         self.input = [None]
-        self.thread = StoppableThread(target=self.get_input,
-                                        args=(self.input, ))
+        self.stdscr = None
 
     def _init_entities(self):
         """Create player and moving objects from the current action map."""
@@ -130,19 +116,24 @@ class Game(object):
 
     def print_game(self, normal=False):
         """
-        Prints the current camera page of the Display Map with info.
+        Draw the current camera page via curses (curses diffs on refresh).
         """
         old_camera = self.camera_row
         self.update_camera()
-        # Hard clear on a page jump so the previous view does not linger.
-        if self.camera_row != old_camera:
-            os.system('clear')
+        if self.camera_row != old_camera and self.stdscr is not None:
+            self.stdscr.erase()
         y_range, x_range = self.camera_env()
-        self.GD.print_map(y_range, x_range)
-
-        print("Lives: {}   Score: {}   Crossing: {}".format(
-            self.lives, self.score, self.level))
-        print("Up[w], Down[s], Left[a], Right[d] or Exit[x]")
+        status = [
+            "Lives: {}   Score: {}   Crossing: {}".format(
+                self.lives, self.score, self.level),
+            "Up[w], Down[s], Left[a], Right[d] or Exit[x]",
+        ]
+        if self.stdscr is None:
+            self.GD.print_map(y_range, x_range)
+            for line in status:
+                print(line)
+            return
+        self.GD.draw_curses(self.stdscr, y_range, x_range, status)
 
     def view_height(self):
         """How many action-map rows fit in the terminal window."""
@@ -259,6 +250,17 @@ class Game(object):
                 pass
             return True
 
+    def poll_keys(self):
+        """Non-blocking read of all pending keys; keep the most recent one."""
+        if self.stdscr is None:
+            return
+        while True:
+            ch = self.stdscr.getch()
+            if ch == -1:
+                break
+            if 0 <= ch < 256:
+                self.input[0] = chr(ch)
+
     def update_map(self):
         """Updates all objects in map"""
         try:
@@ -273,41 +275,50 @@ class Game(object):
         except LevelReset:
             return
 
-    def get_input(self, input):
-        """
-        Thread that gets keyboard input from user
-
-        :param input: <list> List of len(1) that both threads share
-        """
-        while True:
-            input[0] = getch()
-            if threading.current_thread().stopped():
-                exit()
-
     def show_screen(self, title, body_lines, prompt):
-        """Clear the terminal and print a framed status screen."""
+        """Clear the curses window and print a framed status screen."""
         width = 44
         border = '=' * width
-        os.system('clear')
-        print(border)
-        print(title.center(width))
-        print(border)
-        print()
+        lines = [
+            border,
+            title.center(width),
+            border,
+            '',
+        ]
         for line in body_lines:
-            print('  ' + line)
-        print()
-        print(prompt.center(width))
-        print()
+            lines.append('  ' + line)
+        lines.append('')
+        lines.append(prompt.center(width))
 
-    def wait_for_key(self, use_thread=True):
-        """Block until the player presses a key, then consume it."""
-        if use_thread:
-            self.input[0] = None
-            while self.input[0] is None:
-                time.sleep(0.05)
-            self.input[0] = None
-        else:
-            getch()
+        if self.stdscr is None:
+            os.system('clear')
+            for line in lines:
+                print(line)
+            print()
+            return
+
+        self.stdscr.erase()
+        max_y, max_x = self.stdscr.getmaxyx()
+        start_y = max(0, (max_y - len(lines)) // 2)
+        for i, line in enumerate(lines):
+            y = start_y + i
+            if y >= max_y:
+                break
+            x = max(0, (max_x - len(line)) // 2)
+            try:
+                self.stdscr.addnstr(y, x, line, max(0, max_x - x - 1))
+            except curses.error:
+                pass
+        self.stdscr.refresh()
+
+    def wait_for_key(self):
+        """Block until the player presses a key, then resume non-blocking input."""
+        self.input[0] = None
+        if self.stdscr is None:
+            return
+        self.stdscr.nodelay(False)
+        self.stdscr.getch()
+        self.stdscr.nodelay(True)
 
     def start_screen(self):
         """Title screen shown before the first crossing."""
@@ -329,7 +340,7 @@ class Game(object):
             ],
             'Press any key to start',
         )
-        self.wait_for_key(use_thread=False)
+        self.wait_for_key()
 
     def death_screen(self, message):
         """Screen after losing a life, with lives remaining."""
@@ -344,7 +355,7 @@ class Game(object):
             ],
             'Press any key to continue',
         )
-        self.wait_for_key(use_thread=True)
+        self.wait_for_key()
 
     def game_over_screen(self, message):
         """Final screen when all lives are gone."""
@@ -358,6 +369,7 @@ class Game(object):
             ],
             'Press any key to exit',
         )
+        self.wait_for_key()
 
     def win_screen(self):
         """Screen after a successful crossing."""
@@ -375,7 +387,7 @@ class Game(object):
             ],
             'Press any key for the next crossing',
         )
-        self.wait_for_key(use_thread=True)
+        self.wait_for_key()
 
     def resync_clock(self):
         """
@@ -389,42 +401,64 @@ class Game(object):
         self.frame = 1
         self.tick = 0
         self.input[0] = None
-        os.system('clear')
+        if self.stdscr is not None:
+            self.stdscr.erase()
         self.print_game()
         self.frame += 1
 
     def main_loop(self):
-        """The main loop of the game"""
+        """Run the game inside a curses session."""
+        try:
+            locale.setlocale(locale.LC_ALL, '')
+        except locale.Error:
+            pass
+        try:
+            curses.wrapper(self._curses_main)
+        except SystemExit:
+            # Normal exit via kill() / pressing x.
+            pass
+
+    def _setup_curses(self, stdscr):
+        """Configure the curses window for gameplay."""
+        self.stdscr = stdscr
+        curses.curs_set(0)
+        stdscr.nodelay(True)
+        stdscr.keypad(True)
+        stdscr.timeout(0)
+        init_curses_colors()
+
+    def _curses_main(self, stdscr):
+        """Main loop body running under curses.wrapper."""
+        self._setup_curses(stdscr)
         self.start_screen()
 
-        # Clear screen once at the beginning
-        os.system('clear')
-        # Start thread which checks for input and alternate terminal screen
-        self.thread.start()
-
-        # Loop forever, printing game approx. FPS per second
         self.FPS = 40
         self.frame = 1
         self.tick = 0
-
         self.start = time.perf_counter()
+
         try:
             while True:
+                self.poll_keys()
                 self.action()
                 self.update_map()
 
                 if self.timer(self.FPS):
-                    print("\033[H", end='')
                     self.print_game()
                     self.frame += 1
 
                 self.sleeper(self.tick)
                 self.tick += 1
+        except SystemExit:
+            raise
         except Exception:
+            # Restore the terminal before printing a traceback.
+            try:
+                curses.endwin()
+            except curses.error:
+                pass
             traceback.print_exc()
-            self.kill()
-
-        self.kill()
+            raise
 
     def timer(self, FPS):
         """
@@ -486,15 +520,15 @@ class Game(object):
             self.kill(prompt=False)
 
     def kill(self, prompt=True):
-        """
-        Waits for thread to stop properly
-        """
-        if prompt:
-            print("Press any key to exit.")
-        self.thread.stop()
-        self.wait_for_key(use_thread=True)
-        self.thread.join()
-        exit()
+        """Leave the game loop; curses.wrapper restores the terminal."""
+        if prompt and self.stdscr is not None:
+            self.show_screen(
+                'BYE',
+                ['Thanks for playing.'],
+                'Press any key to exit',
+            )
+            self.wait_for_key()
+        raise SystemExit()
 
 
 class Player(object):
