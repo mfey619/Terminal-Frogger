@@ -301,6 +301,22 @@ class Game(object):
         )
         self.wait_for_key(use_thread=True)
 
+    def resync_clock(self):
+        """
+        Reset frame/tick timing after a pause (win/death screen) and redraw.
+
+        The main loop's sleeper schedules from tick count vs self.start. If we
+        reset start but leave tick high, sleeper sleeps for a huge delay and the
+        screen stays blank until that sleep finishes.
+        """
+        self.start = time.perf_counter()
+        self.frame = 1
+        self.tick = 0
+        self.input[0] = None
+        os.system('clear')
+        self.print_game()
+        self.frame += 1
+
     def main_loop(self):
         """The main loop of the game"""
         self.start_screen()
@@ -313,7 +329,7 @@ class Game(object):
         # Loop forever, printing game approx. FPS per second
         self.FPS = 40
         self.frame = 1
-        tick = 0
+        self.tick = 0
 
         self.start = time.perf_counter()
         try:
@@ -326,8 +342,8 @@ class Game(object):
                     self.print_game()
                     self.frame += 1
 
-                self.sleeper(tick)
-                tick += 1
+                self.sleeper(self.tick)
+                self.tick += 1
         except Exception:
             traceback.print_exc()
             self.kill()
@@ -373,10 +389,7 @@ class Game(object):
         self.score += self.SCORE_PER_WIN
         self.win_screen()
         self.reset_level()
-        os.system('clear')
-        # Avoid a frame burst after the pause on the win screen
-        self.start = time.perf_counter()
-        self.frame = 1
+        self.resync_clock()
         raise LevelReset()
 
     def dead(self, message=' '):
@@ -388,9 +401,7 @@ class Game(object):
         if self.lives > 0:
             self.death_screen(message)
             self.reset_level()
-            os.system('clear')
-            self.start = time.perf_counter()
-            self.frame = 1
+            self.resync_clock()
             raise LevelReset()
         else:
             self.game_over_screen(message)
